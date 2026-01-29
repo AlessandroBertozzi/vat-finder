@@ -1,137 +1,42 @@
 # VAT Finder
 
-Agente AI per trovare Partita IVA e Codice Fiscale di aziende italiane tramite ricerche web.
+AI agent to find Italian VAT numbers (Partita IVA) and tax codes (Codice Fiscale) using web search.
 
-## Funzionalità
-
-- **Ricerca automatica**: L'agente decide autonomamente quali query fare per trovare P.IVA/CF
-- **Cache intelligente**: Evita ricerche duplicate riconoscendo aziende simili già elaborate
-- **Tool use**: Usa l'architettura tool_use di Claude per un approccio veramente agentico
-- **Ricerca web**: Integrazione con Tavily per ricerche web accurate
-- **Batch processing**: Processa file CSV con migliaia di aziende
-- **Salvataggio incrementale**: Salva i risultati ogni 10 aziende per evitare perdite di dati
-
-## Installazione
-
-### Da sorgente
+## Setup
 
 ```bash
-git clone https://github.com/yourusername/vat-finder.git
-cd vat-finder
 pip install -e .
 ```
 
-### Dipendenze manuali
-
-```bash
-pip install anthropic tavily-python python-dotenv
-```
-
-## Configurazione
-
-Crea un file `.env` nella directory del progetto:
+Create a `.env` file:
 
 ```env
-ANTHROPIC_API_KEY=your-anthropic-api-key
-TAVILY_API_KEY=your-tavily-api-key
+ANTHROPIC_API_KEY=your-key
+TAVILY_API_KEY=your-key
 ```
 
-Oppure esporta le variabili d'ambiente:
+## Usage
 
 ```bash
-export ANTHROPIC_API_KEY="your-key"
-export TAVILY_API_KEY="your-key"
-```
-
-## Utilizzo
-
-### Test singola azienda
-
-```bash
+# Test single company
 vat-finder --test "Politecnico di Bari"
+
+# Process CSV file
+vat-finder data/input.csv
+
+# Limit to N companies
+vat-finder data/input.csv -n 10
+
+# Skip companies with existing VAT
+vat-finder data/input.csv --skip-existing
+
+# Use Sonnet model (more accurate)
+vat-finder data/input.csv -m sonnet
 ```
 
-### Processare un file CSV
+## How it works
 
-```bash
-# Processa tutte le aziende
-vat-finder input.csv
-
-# Limita a 10 aziende
-vat-finder input.csv -n 10
-
-# Salta aziende con VAT già presente
-vat-finder input.csv --skip-existing
-
-# Usa modello Sonnet (più preciso)
-vat-finder input.csv -m sonnet
-
-# Specifica file di output
-vat-finder input.csv -o risultati.csv
-
-# Riprendi da un certo indice
-vat-finder input.csv --start 50 -n 20
-```
-
-### Opzioni
-
-| Opzione | Descrizione |
-|---------|-------------|
-| `-n, --limit N` | Processa solo N aziende |
-| `--skip-existing` | Salta aziende con VAT già presente |
-| `-m, --model MODEL` | Modello Claude: `haiku` (default) o `sonnet` |
-| `-o, --output FILE` | File CSV di output |
-| `--start N` | Inizia dall'indice N |
-| `--test "NOME"` | Testa una singola azienda |
-
-## Formato CSV
-
-### Input
-
-Il file CSV deve avere almeno la colonna `Name`. Colonne opzionali:
-
-| Colonna | Descrizione |
-|---------|-------------|
-| `Name` | Nome dell'azienda (obbligatorio) |
-| `VAT Number` | P.IVA esistente (opzionale) |
-| `City` | Città (aiuta la ricerca) |
-| `Street` | Indirizzo |
-| `Postal Code` | CAP |
-
-### Output
-
-Il CSV di output include tutte le colonne originali più:
-
-| Colonna | Descrizione |
-|---------|-------------|
-| `Found_PIVA` | Partita IVA trovata |
-| `Found_CF` | Codice Fiscale trovato |
-| `Source` | Fonte dell'informazione |
-| `Queries_Used` | Numero di query usate |
-| `Notes` | Note aggiuntive |
-
-## Come funziona
-
-1. **Cache check**: L'agente cerca prima nel cache se un'azienda simile è già stata elaborata
-2. **Ricerca web**: Se non trova nel cache, usa Tavily per cercare sul web
-3. **Analisi**: Claude analizza i risultati e estrae P.IVA/CF
-4. **Iterazione**: Se non trova, prova query diverse (max 5 per azienda)
-5. **Salvataggio**: I risultati vengono salvati nel cache e nel CSV
-
-## Architettura
-
-```
-src/vat_finder/
-├── __init__.py      # Package exports
-├── agent.py         # Classe VATFinderAgent
-├── cache.py         # Cache dei risultati
-├── cli.py           # Command-line interface
-├── config.py        # Configurazione
-├── io.py            # Input/output CSV
-├── prompts.py       # System prompt
-└── tools.py         # Definizione tools
-```
-
-## Licenza
-
-MIT
+1. Agent checks cache for similar companies already processed
+2. If not found, searches the web using Tavily
+3. Claude analyzes results and extracts VAT/tax code
+4. Max 5 queries per company, then moves to next

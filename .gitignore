@@ -39,5 +39,6 @@ htmlcov/
 *_disambiguated.csv
 output/
 
-# Data files (uncomment if you don't want to track input data)
-# *.csv
+# Data files
+data/*.csv
+!data/.gitkeep
