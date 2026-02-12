@@ -32,6 +32,9 @@ vat-finder data/input.csv --skip-existing
 
 # Use Sonnet model (more accurate)
 vat-finder data/input.csv -m sonnet
+
+# Set custom max queries per company (default: 5)
+vat-finder data/input.csv --max-queries 10
 ```
 
 ## How it works
@@ -39,4 +42,4 @@ vat-finder data/input.csv -m sonnet
 1. Agent checks cache for similar companies already processed
 2. If not found, searches the web using Tavily
 3. Claude analyzes results and extracts VAT/tax code
-4. Max 5 queries per company, then moves to next
+4. Max queries per company (default: 5, configurable with --max-queries), then moves to next

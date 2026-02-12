@@ -7,19 +7,22 @@ import sys
 from dotenv import load_dotenv
 from anthropic import Anthropic
 from tavily import TavilyClient
+from rich.console import Console
 
 from .agent import VATFinderAgent
 from .config import MODELS, DEFAULT_MODEL, MAX_QUERIES_PER_ORG
 from .io import load_companies, save_results
 
+console = Console()
+
 
 def create_parser() -> argparse.ArgumentParser:
-    """Crea il parser degli argomenti."""
+    """Create argument parser."""
     parser = argparse.ArgumentParser(
-        description="Trova P.IVA/CF di aziende italiane usando ricerche web",
+        description="Find VAT/CF of Italian companies using web search",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Esempi:
+Examples:
   vat-finder --test "Politecnico di Bari"
   vat-finder input.csv -n 10
   vat-finder input.csv --skip-existing
@@ -29,40 +32,46 @@ Esempi:
     parser.add_argument(
         "input_csv",
         nargs="?",
-        help="File CSV di input con le aziende"
+        help="Input CSV file with companies"
     )
     parser.add_argument(
         "-m", "--model",
         choices=list(MODELS.keys()),
         default=DEFAULT_MODEL,
-        help=f"Modello Claude da usare (default: {DEFAULT_MODEL})"
+        help=f"Claude model to use (default: {DEFAULT_MODEL})"
     )
     parser.add_argument(
         "-n", "--limit",
         type=int,
         default=None,
-        help="Numero massimo di aziende da processare"
+        help="Max number of companies to process"
     )
     parser.add_argument(
         "--skip-existing",
         action="store_true",
-        help="Salta aziende che hanno già un VAT number"
+        help="Skip companies that already have a VAT number"
     )
     parser.add_argument(
         "-o", "--output",
-        help="File CSV di output (default: input_with_vat.csv)"
+        help="Output CSV file (default: input_with_vat.csv)"
     )
     parser.add_argument(
         "--start",
         type=int,
         default=0,
-        help="Indice da cui iniziare (per riprendere elaborazioni)"
+        help="Start index (to resume processing)"
     )
     parser.add_argument(
         "--test",
         type=str,
         default=None,
-        help="Testa una singola azienda passando il nome direttamente"
+        help="Test a single company by name"
+    )
+    parser.add_argument(
+        "--max-queries",
+        type=int,
+        default=MAX_QUERIES_PER_ORG,
+        help=f"Max tool calls per company (default: {MAX_QUERIES_PER_ORG})"
     )
 
     return parser
@@ -76,22 +85,22 @@ def main() -> None:
     parser = create_parser()
     args = parser.parse_args()
 
-    # Verifica che ci sia input_csv o --test
+    # Check for input_csv or --test
     if not args.test and not args.input_csv:
-        parser.error("Specificare un file CSV di input oppure usare --test")
+        parser.error("Specify an input CSV file or use --test")
 
     # Verifica API keys
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
     tavily_key = os.environ.get("TAVILY_API_KEY")
 
     if not anthropic_key:
-        print("Errore: ANTHROPIC_API_KEY non configurata")
-        print("Aggiungi la chiave nel file .env o come variabile d'ambiente")
+        console.print("[bold red]Error:[/] ANTHROPIC_API_KEY not configured")
+        console.print("[dim]Add the key in .env file or as environment variable[/]")
         sys.exit(1)
 
     if not tavily_key:
-        print("Errore: TAVILY_API_KEY non configurata")
-        print("Aggiungi la chiave nel file .env o come variabile d'ambiente")
+        console.print("[bold red]Error:[/] TAVILY_API_KEY not configured")
+        console.print("[dim]Add the key in .env file or as environment variable[/]")
         sys.exit(1)
 
     # Inizializza client
@@ -99,11 +108,10 @@ def main() -> None:
     tavily_client = TavilyClient(api_key=tavily_key)
     model = MODELS[args.model]
 
-    print(f"Modello: {args.model} ({model})")
-    print(f"Max query per azienda: {MAX_QUERIES_PER_ORG}")
+    console.print(f"\n[bold cyan]VAT Finder[/] | {args.model} | max {args.max_queries} query")
 
     # Inizializza agente
-    agent = VATFinderAgent(anthropic_client, tavily_client, model)
+    agent = VATFinderAgent(anthropic_client, tavily_client, model, max_queries=args.max_queries)
 
     # Modalità test
     if args.test:
@@ -116,38 +124,31 @@ def main() -> None:
             "postal_code": "",
             "original_row": {"Name": args.test}
         }
-        result = agent.search_company(company)
-        print(f"\n{'='*60}")
-        print("RISULTATO FINALE:")
-        print(f"  P.IVA: {result.get('partita_iva', 'Non trovata')}")
-        print(f"  CF: {result.get('codice_fiscale', 'Non trovato')}")
-        print(f"  Fonte: {result.get('fonte', 'N/A')}")
-        print(f"  Query usate: {result.get('queries_used', 0)}")
-        print(f"  Note: {result.get('note', '')}")
+        agent.search_company(company)
         return
 
     # Carica aziende da CSV
     input_csv = args.input_csv
     output_csv = args.output or input_csv.replace(".csv", "_with_vat.csv")
 
-    print(f"\nCaricamento aziende da {input_csv}...")
+    console.print(f"\n[dim]Loading companies from[/] {input_csv}...")
     companies = load_companies(input_csv)
-    print(f"Caricate {len(companies)} aziende")
+    console.print(f"[bold]{len(companies)}[/] companies loaded")
 
-    # Filtra se richiesto
+    # Filter if requested
     if args.skip_existing:
         original_count = len(companies)
         companies = [c for c in companies if not c.get("existing_vat")]
-        print(f"Filtrate {original_count - len(companies)} aziende con VAT esistente")
+        console.print(f"[yellow]Filtered {original_count - len(companies)} companies with existing VAT[/]")
 
-    # Applica start e limit
+    # Apply start and limit
     if args.start > 0:
         companies = companies[args.start:]
-        print(f"Partendo dall'indice {args.start}")
+        console.print(f"[dim]Starting from index {args.start}[/]")
 
     if args.limit:
         companies = companies[:args.limit]
-        print(f"Limitate a {len(companies)} aziende")
+        console.print(f"[dim]Limited to {len(companies)} companies[/]")
 
     # Processa ogni azienda
     results = []
@@ -155,34 +156,29 @@ def main() -> None:
 
     try:
         for i, company in enumerate(companies):
-            print(f"\n[{i+1}/{len(companies)}]", end="")
             result = agent.search_company(company)
             results.append(result)
 
             if result.get("partita_iva") or result.get("codice_fiscale"):
                 found_count += 1
 
-            # Salva risultati intermedi ogni 10 aziende
+            # Save intermediate results every 10 companies
             if (i + 1) % 10 == 0:
-                print(f"\n--- Salvataggio intermedio ({i+1} aziende) ---")
+                console.print(f"[dim]Saved {i+1}/{len(companies)}[/]")
                 save_results(companies[:i+1], results, output_csv)
 
     except KeyboardInterrupt:
-        print("\n\nInterrotto dall'utente. Salvataggio risultati parziali...")
+        console.print("\n[yellow]Interrupted. Saving...[/]")
 
     # Salva risultati finali
     if results:
         save_results(companies[:len(results)], results, output_csv)
 
-    # Statistiche finali
-    print(f"\n{'='*60}")
-    print("COMPLETATO!")
-    print(f"{'='*60}")
-    print(f"Aziende processate: {len(results)}")
-    print(f"P.IVA/CF trovati: {found_count}")
+    # Summary
     if results:
-        print(f"Percentuale successo: {found_count/len(results)*100:.1f}%")
-    print(f"Output: {output_csv}")
+        pct = found_count / len(results) * 100
+        color = "green" if pct >= 70 else "yellow" if pct >= 40 else "red"
+        console.print(f"\n[bold]Done:[/] {found_count}/{len(results)} found ([{color}]{pct:.0f}%[/]) -> {output_csv}")
 
 
 if __name__ == "__main__":

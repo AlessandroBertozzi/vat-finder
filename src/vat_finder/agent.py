@@ -3,32 +3,37 @@
 import json
 from anthropic import Anthropic
 from tavily import TavilyClient
+from rich.console import Console
+from rich.tree import Tree
 
 from .cache import ResultsCache
 from .config import MAX_QUERIES_PER_ORG
 from .prompts import SYSTEM_PROMPT
 from .tools import TOOLS
 
+console = Console()
+
 
 class VATFinderAgent:
     """Agente che cerca P.IVA/CF usando tool_use di Claude."""
 
-    def __init__(self, anthropic_client: Anthropic, tavily_client: TavilyClient, model: str):
+    def __init__(self, anthropic_client: Anthropic, tavily_client: TavilyClient, model: str, max_queries: int = MAX_QUERIES_PER_ORG):
         self.anthropic = anthropic_client
         self.tavily = tavily_client
         self.model = model
+        self.max_queries = max_queries
         self.cache = ResultsCache()
 
-    def _execute_tool(self, tool_name: str, tool_input: dict) -> str:
+    def _execute_tool(self, tool_name: str, tool_input: dict, tree: Tree) -> str:
         """Esegue un tool e restituisce il risultato."""
         if tool_name == "search_cache":
             query = tool_input.get("query", "")
-            print(f"    [CACHE] Ricerca: {query}")
+            tree.add(f"[cyan]CACHE[/] {query}")
             return self.cache.search(query)
 
         elif tool_name == "web_search":
             query = tool_input.get("query", "")
-            print(f"    [WEB] Ricerca: {query}")
+            tree.add(f"[yellow]WEB[/] {query}")
 
             try:
                 response = self.tavily.search(
@@ -40,7 +45,7 @@ class VATFinderAgent:
 
                 results = response.get("results", [])
                 if not results:
-                    return "Nessun risultato trovato."
+                    return "No results found."
 
                 # Formatta i risultati per Claude
                 formatted = []
@@ -54,9 +59,9 @@ class VATFinderAgent:
                 return "\n\n---\n\n".join(formatted)
 
             except Exception as e:
-                return f"Errore nella ricerca: {e}"
+                return f"Search error: {e}"
 
-        return f"Tool sconosciuto: {tool_name}"
+        return f"Unknown tool: {tool_name}"
 
     def _extract_json_result(self, text: str) -> dict | None:
         """Estrae il JSON dal testo di risposta."""
@@ -72,13 +77,11 @@ class VATFinderAgent:
     def search_company(self, company: dict) -> dict:
         """Cerca P.IVA/CF per un'azienda usando l'agentic loop."""
 
-        print(f"\n{'='*60}")
-        print(f"Azienda: {company['name']}")
+        # Crea l'albero per questa azienda
+        company_label = f"[bold]{company['name']}[/]"
         if company.get('city'):
-            print(f"Città: {company['city']}")
-        if company.get('existing_vat'):
-            print(f"VAT esistente: {company['existing_vat']}")
-        print(f"{'='*60}")
+            company_label += f" [dim]({company['city']})[/]"
+        tree = Tree(company_label)
 
         # Messaggio iniziale per Claude
         user_message = f"""Trova la Partita IVA e/o il Codice Fiscale di questa azienda:
@@ -88,13 +91,13 @@ Città: {company.get('city', 'Non specificata')}
 Indirizzo: {company.get('street', 'Non specificato')}
 CAP: {company.get('postal_code', 'Non specificato')}
 
-Hai a disposizione massimo {MAX_QUERIES_PER_ORG} ricerche. Inizia!"""
+Hai a disposizione massimo {self.max_queries} ricerche. Inizia!"""
 
         messages = [{"role": "user", "content": user_message}]
         queries_used = 0
 
         # Agentic loop
-        while queries_used < MAX_QUERIES_PER_ORG:
+        while queries_used < self.max_queries:
             response = self.anthropic.messages.create(
                 model=self.model,
                 max_tokens=1024,
@@ -107,18 +110,28 @@ Hai a disposizione massimo {MAX_QUERIES_PER_ORG} ricerche. Inizia!"""
             if response.stop_reason == "end_turn":
                 for block in response.content:
                     if hasattr(block, 'text'):
-                        print(f"\n  [AGENTE] {block.text[:200]}...")
                         result = self._extract_json_result(block.text)
                         if result:
                             result['queries_used'] = queries_used
                             self.cache.add(company['name'], result)
+                            # Aggiungi risultato all'albero e stampa
+                            piva = result.get('partita_iva')
+                            cf = result.get('codice_fiscale')
+                            if piva or cf:
+                                res_str = f"[bold green]P.IVA: {piva or '-'}[/] | [bold green]CF: {cf or '-'}[/]"
+                            else:
+                                res_str = "[dim]Not found[/]"
+                            tree.add(res_str)
+                            console.print(tree)
                             return result
 
+                tree.add("[dim]Unstructured response[/]")
+                console.print(tree)
                 return {
                     "partita_iva": None,
                     "codice_fiscale": None,
                     "queries_used": queries_used,
-                    "note": "Risposta non strutturata"
+                    "note": "Unstructured response"
                 }
 
             # Processa tool_use
@@ -128,17 +141,13 @@ Hai a disposizione massimo {MAX_QUERIES_PER_ORG} ricerche. Inizia!"""
             for block in response.content:
                 if block.type == "tool_use":
                     queries_used += 1
-                    print(f"\n  [{queries_used}/{MAX_QUERIES_PER_ORG}]", end="")
-
-                    tool_result = self._execute_tool(block.name, block.input)
+                    tool_result = self._execute_tool(block.name, block.input, tree)
 
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
                         "content": tool_result
                     })
-                elif hasattr(block, 'text') and block.text:
-                    print(f"\n  [PENSIERO] {block.text[:100]}...")
 
             messages.append({"role": "assistant", "content": assistant_content})
             messages.append({"role": "user", "content": tool_results})
@@ -162,11 +171,21 @@ Hai a disposizione massimo {MAX_QUERIES_PER_ORG} ricerche. Inizia!"""
                 if result:
                     result['queries_used'] = queries_used
                     self.cache.add(company['name'], result)
+                    piva = result.get('partita_iva')
+                    cf = result.get('codice_fiscale')
+                    if piva or cf:
+                        res_str = f"[bold green]P.IVA: {piva or '-'}[/] | [bold green]CF: {cf or '-'}[/]"
+                    else:
+                        res_str = "[dim]Not found[/]"
+                    tree.add(res_str)
+                    console.print(tree)
                     return result
 
+        tree.add("[dim]No result[/]")
+        console.print(tree)
         return {
             "partita_iva": None,
             "codice_fiscale": None,
             "queries_used": queries_used,
-            "note": "Nessun risultato"
+            "note": "No result"
         }
